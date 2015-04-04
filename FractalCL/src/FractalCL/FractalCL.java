@@ -38,6 +38,26 @@ under those regulations, please refer to the U.S. Bureau of Industry and Securit
  */
 //
 
+/*import static org.jocl.CL.CL_CONTEXT_PLATFORM;
+import static org.jocl.CL.CL_DEVICE_TYPE_ALL;
+import static org.jocl.CL.CL_MEM_READ_WRITE;
+import static org.jocl.CL.CL_MEM_WRITE_ONLY;
+import static org.jocl.CL.CL_TRUE;
+import static org.jocl.CL.clBuildProgram;
+import static org.jocl.CL.clCreateBuffer;
+import static org.jocl.CL.clCreateCommandQueue;
+import static org.jocl.CL.clCreateContext;
+import static org.jocl.CL.clCreateKernel;
+import static org.jocl.CL.clCreateProgramWithSource;
+import static org.jocl.CL.clEnqueueNDRangeKernel;
+import static org.jocl.CL.clEnqueueReadBuffer;
+import static org.jocl.CL.clEnqueueWriteBuffer;
+import static org.jocl.CL.clGetDeviceIDs;
+import static org.jocl.CL.clGetPlatformIDs;
+import static org.jocl.CL.clSetKernelArg;*/
+
+import static org.jocl.CL.*;
+
 import java.awt.Color;
 import java.awt.DisplayMode;
 import java.awt.EventQueue;
@@ -62,6 +82,10 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.awt.image.Raster;
 import java.awt.image.WritableRaster;
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.Date;
 
 import javax.sound.sampled.AudioSystem;
@@ -70,7 +94,23 @@ import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JSplitPane;
 
-import org.apfloat.Apfloat;
+
+
+
+
+
+
+import org.jocl.CL;
+import org.jocl.Pointer;
+import org.jocl.Sizeof;
+import org.jocl.cl_command_queue;
+import org.jocl.cl_context;
+import org.jocl.cl_context_properties;
+import org.jocl.cl_device_id;
+import org.jocl.cl_kernel;
+import org.jocl.cl_mem;
+import org.jocl.cl_platform_id;
+import org.jocl.cl_program;
 
 import FractalCL.kernel.MandelKernel;
 
@@ -94,23 +134,63 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	Rectangle oldBounds, newBounds;
 	JSplitPane splitPane;
 
-	static int width = 775;
-	static int  height = 775;
+	static int width = 1920;
+	static int  height = 1080;
 	static int centerPixelX,centerPixelY, testGridResolution,testGridWidth;
-	static double centerX = -1f;
-	static double centerY = 0f;
+	static float centerX = -1f;
+	static float  centerY = 0f;
 	static int mouseX,mouseY,mouseDownX,mouseDownY;
 	static Range range,rangeG;
 	static BufferedImage image;
 	static int[] rgb, testGrid;
-	static MandelKernel kernel;
-	static double pixelScale;
-	static double  zoomSpeed = .05f;
+	int maxIterations = 1000;
+	
+	//static MandelKernel kernel;
+	static float pixelScale;
+	static float  zoomSpeed = .05f;
 	static int hDiv = 1;
 	static int vDiv = 1;
 	static Range[][] ranges = new Range[vDiv][hDiv];
 	long clickTimer;
 	static Device clDevice;
+	
+    /** 
+     * The OpenCL context
+     */
+    private cl_context context;
+
+    /**
+     * The OpenCL command queue
+     */
+    private cl_command_queue commandQueue;
+
+    /**
+     * The OpenCL kernel which will actually compute the Mandelbrot
+     * set and store the pixel data in a CL memory object
+     */
+    private cl_kernel kernel;
+
+    /**
+     * The OpenCL memory object which stores the pixel data
+     */
+    private cl_mem pixelMem;
+    private cl_mem testMem;
+    /**
+     * An OpenCL memory object which stores a nifty color map,
+     * encoded as integers combining the RGB components of
+     * the colors.
+     */
+    private cl_mem colorMapMem;
+
+    /**
+     * The color map which will be copied to OpenCL for filling
+     * the PBO. 
+     */
+    private int colorMap[];
+	
+    
+    
+	
 	/**
 	 * 
 	 */
@@ -145,100 +225,123 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	public void initialize() {
 		System.out.println("initialize()");
 	
+		
 		if (this.isVisible() == false) {
-			//this.setBounds(1930, 0, 3840, 2160);
+			initializeCL();
 			this.setBounds(1940,0,width,height);
 			newBounds = getBounds();
-	//		this.setUndecorated(true);
-			
+			pixelScale = 2.0f/width;
+			centerX =-0.75f;
+			centerY = 0f;
 			this.setVisible(true);
 		}
+
 		
-		//splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-		//getContentPane().add(comp)(splitPane);
-		width = this.getContentPane().getWidth()+testGridResolution;
-	    height = this.getContentPane().getHeight()+testGridResolution;
-	    
 	    testGridResolution = 25;
-		width = width-width%testGridResolution;
-		height = height-height%testGridResolution;
-	    
-		//width = w-w%16;
-		//height = h-h%16;
+	    width = getContentPane().getWidth();
+	    height = getContentPane().getHeight();
+		// resize to a multiple of testGridResolution
+	    width = width-width%testGridResolution+testGridResolution;
+		height = height-height%testGridResolution+testGridResolution;
+	System.out.println("width "+width+"  height"+height);
+
+        // Create the memory object which will be filled with the pixel data
+        pixelMem = clCreateBuffer(context, CL_MEM_WRITE_ONLY,width * height * Sizeof.cl_int, null, null);
+        
+
 		System.out.println("WxH "+width+"\t"+height);
 		clDevice = Device.best();
-		System.out.println(clDevice.toString());
-		System.out.println(Device.firstGPU().toString());
-		System.out.println(clDevice.toString());
-		//range = clDevice.createRange2D(width/hDiv-2, height/vDiv-2);
-		//range = clDevice.createRange2D(256, 256);
-		//range = clDevice.createRange2D(2992, 1992);
-		
-		
-		range = clDevice.createRange2D(width, height);
-/*		for(int i = 20; i < 30; i++){
-			System.out.println("trying resolution "+i);
-			if(width%i==0){
-				testGridResolution = i;
-				System.out.println("Resolution = "+i);
-				break;
-			}
-		}*/
-		
-		
-		
+
 		testGridWidth = width/testGridResolution;
-		rangeG = clDevice.createRange2D(width/testGridResolution, height/testGridResolution);
 		testGrid = new int[(width/testGridResolution)*(height/testGridResolution)];
-		System.out.println("W: "+width+" H: "+height);
-		//System.out.println("Range WxH "+range.getGlobalSize(0)+"\t"+range.getGlobalSize(1));
-		//System.out.println(range.toString());
 
 		image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
 		rgb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-		System.out.println(rgb.toString());
-				//
-	//	System.out.println(wr.toString());
-		//rgb = ((DataBufferInt)wr.get).getData();
-		System.out.println("rgb "+rgb.length);
-		pixelScale = 2.0/width;
-		centerX =-0.75;
-		centerY = 0f;
+
+
 		centerPixelX = width/2;
 		centerPixelY = height/2;
 		// save current values
-	
-		if (kernel != null) {
-			pixelScale = kernel.getPixelScale();
-			centerX = kernel.getCenterX();
-			centerY = kernel.getCenterY();
-			kernel.dispose();
-		}
-		kernel = new MandelKernel(width, height,testGrid, rgb);
-
-		kernel.setExplicit(true);
-		kernel.setPixelScale(pixelScale);
-
 		
 		render(1f, centerX, centerY);
-		
 
-		// new kernel to match window size
-
-		
-
-		
 		// Report target execution mode: GPU or JTP (Java Thread Pool).
-		System.out.println("Execution mode=" + kernel.getExecutionMode());
+		//System.out.println("Execution mode=" + kernel.getExecutionMode());
 		
-/*		Mixer.Info[] mixers = AudioSystem.getMixerInfo();
-		for(int i = 0; i < mixers.length; i++){
-			System.out.println(mixers[i].toString());
-		}
-		*/
+
 	}
 
+/**
+ * One time setup of OpenCL context
+ */
+	private void initializeCL(){
+		
+        final int platformIndex = 0;
+        final long deviceType = CL_DEVICE_TYPE_ALL;
+        final int deviceIndex = 0;
 
+        // Enable exceptions and subsequently omit error checks in this sample
+        CL.setExceptionsEnabled(true);
+
+        // Obtain the number of platforms
+        int numPlatformsArray[] = new int[1];
+        clGetPlatformIDs(0, null, numPlatformsArray);
+        int numPlatforms = numPlatformsArray[0];
+
+        // Obtain a platform ID
+        cl_platform_id platforms[] = new cl_platform_id[numPlatforms];
+        clGetPlatformIDs(platforms.length, platforms, null);
+        cl_platform_id platform = platforms[platformIndex];
+
+        // Initialize the context properties
+        cl_context_properties contextProperties = new cl_context_properties();
+        contextProperties.addProperty(CL_CONTEXT_PLATFORM, platform);
+        
+        // Obtain the number of devices for the platform
+        int numDevicesArray[] = new int[1];
+        clGetDeviceIDs(platform, deviceType, 0, null, numDevicesArray);
+        int numDevices = numDevicesArray[0];
+        
+        // Obtain a device ID 
+        cl_device_id devices[] = new cl_device_id[numDevices];
+        clGetDeviceIDs(platform, deviceType, numDevices, devices, null);
+        cl_device_id device = devices[deviceIndex];
+
+        // Create a context for the selected device
+        context = clCreateContext(contextProperties, 1, new cl_device_id[]{device},null, null, null);
+        
+        // Create a command-queue for the selected device
+        commandQueue =clCreateCommandQueue(context, device, 0, null);
+
+        // Program Setup
+        String source = readFile("kernels/FractalCL.cl");
+
+        // Create the program
+        cl_program cpProgram = clCreateProgramWithSource(context, 1,new String[]{ source }, null, null);
+
+        // Build the program
+        clBuildProgram(cpProgram, 0, null, "-cl-mad-enable", null, null);
+
+        // Create the kernel
+        kernel = clCreateKernel(cpProgram, "computeMandelbrot", null);
+
+        
+        ///
+        
+        // Create and fill the memory object containing the color map
+        colorMap = new int[maxIterations];
+        int hueStep = 1/maxIterations;
+        for(int i = 0; i < maxIterations; i++){
+        	colorMap[i] = Color.HSBtoRGB(i*hueStep, 1f, 1);
+        }
+        colorMapMem = clCreateBuffer(context, CL_MEM_READ_WRITE,colorMap.length * Sizeof.cl_int, null, null);
+      
+        
+        
+	}
+	
+	
+	
 /**
  * Render.
  *
@@ -247,43 +350,96 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
  * @param centerY the center y
  * @return the long
  */
-	private long render(double zoomFactor, double centerX, double centerY) {
+	private void  render(float zoomFactor, float centerX, float centerY) {
 		//System.out.println("RENDER "+zoomFactor+"\t"+centerX+"\t"+centerY);
-		kernel.setTestGrid(new int[(width/testGridResolution)*(height/testGridResolution)]);
-		long elapsedStart = System.currentTimeMillis();
-		double newScale = kernel.getPixelScale() * zoomFactor;
-		kernel.setPixelScale(newScale);
-		kernel.setCenter(centerX, centerY);
+        pixelScale *= zoomFactor;
+		// Set work size and execute the kernel
+        long globalWorkSize[] = new long[2];
+        globalWorkSize[0] = width;
+        globalWorkSize[1] = height;
 
-		kernel.setTestGridResolution(testGridResolution);
-		kernel.setTestPass(true);
-		kernel.execute(rangeG);
-		
-		kernel.setTestPass(false);
-		kernel.execute(range);
+        int maxIterations = 550;
+        clSetKernelArg(kernel, 0, Sizeof.cl_mem, Pointer.to(pixelMem));
+        clSetKernelArg(kernel, 1, Sizeof.cl_int, Pointer.to(new int[]{width}));
+        clSetKernelArg(kernel, 2, Sizeof.cl_int, Pointer.to(new int[]{height}));
+        clSetKernelArg(kernel, 3, Sizeof.cl_float, Pointer.to(new float[]{ centerX}));
+        clSetKernelArg(kernel, 4, Sizeof.cl_float, Pointer.to(new float[]{ centerY}));
+        clSetKernelArg(kernel, 5, Sizeof.cl_float, Pointer.to(new float[]{ pixelScale}));
+        clSetKernelArg(kernel, 6, Sizeof.cl_int, Pointer.to(new int[]{ maxIterations }));
+        clSetKernelArg(kernel, 7, Sizeof.cl_mem, Pointer.to(colorMapMem));
+        clSetKernelArg(kernel, 8, Sizeof.cl_int, Pointer.to(new int[]{ colorMap.length }));
 
-
+        clEnqueueWriteBuffer(commandQueue, colorMapMem, true, 0,colorMap.length * Sizeof.cl_uint, Pointer.to(colorMap), 0, null, null);
+        clEnqueueNDRangeKernel(commandQueue, kernel, 2, null,globalWorkSize, null, 0, null, null);
+        
+        // Read the pixel data into the BufferedImage
+        DataBufferInt dataBuffer = (DataBufferInt)image.getRaster().getDataBuffer();
+        int data[] = dataBuffer.getData();
+    	System.out.println("width "+width+"  height"+height);
+        clEnqueueReadBuffer(commandQueue, pixelMem, CL_TRUE, 0,Sizeof.cl_uint * width*height, Pointer.to(data), 0, null, null);
+       
 			
 		this.paint(this.getContentPane().getGraphics());
-		return System.currentTimeMillis() - elapsedStart;
 	}
 
 	
 	private void recenter(Point p){
 		
 		int steps = 10;
-		double xDelta = -1*(centerPixelX-p.x)*kernel.getPixelScale()/steps;
-		double yDelta = -1*(centerPixelY-p.y)*kernel.getPixelScale()/steps;
+		float xDelta = -1*(centerPixelX-p.x)*pixelScale/steps;
+		float yDelta = -1*(centerPixelY-p.y)*pixelScale/steps;
 		for(int i = 0; i <steps; i++ ){
-			centerX = kernel.getCenterX()+xDelta;
-			centerY = kernel.getCenterY()+yDelta;
-			System.out.println("Recenter: "+render(1f, centerX, centerY));
+			centerX = centerX+xDelta;
+			centerY = centerY+yDelta;
+			render(1f, centerX, centerY);
 
 		}
 		
 
 	}
 	
+	
+    /**
+     * [from JOCL example code]
+     * Helper function which reads the file with the given name and returns 
+     * the contents of this file as a String. Will exit the application
+     * if the file can not be read.
+     * 
+     * @param fileName The name of the file to read.
+     * @return The contents of the file
+     */
+    private String readFile(String fileName)
+    {
+    	
+    	try
+        {
+            BufferedReader br = new BufferedReader(
+                new InputStreamReader(new FileInputStream(fileName)));
+            StringBuffer sb = new StringBuffer();
+            String line = null;
+            while (true)
+            {
+                line = br.readLine();
+                if (line == null)
+                {
+                    break;
+                }
+                sb.append(line).append("\n");
+                System.out.println(line);
+            }
+            System.out.println("*** "+fileName);
+            return sb.toString();
+        }
+        catch (IOException e)
+        {
+            e.printStackTrace();
+            System.exit(1);
+            return null;
+        }
+   
+    }
+    
+    
 	// ******************************************************************************************
 	// *** LISTENERS ***
 	// ***********************************************************************
@@ -291,7 +447,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	//
 	@Override
 	public void mouseWheelMoved(MouseWheelEvent arg0) {
-
+System.out.println(arg0.toString());
 		int amount = Math.abs(arg0.getWheelRotation());
 		int step = arg0.getWheelRotation() / Math.abs(amount); // 1 or -1
 
@@ -312,18 +468,12 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	}
 
 	@Override
-	public void mouseDragged(MouseEvent arg0) {
-
-		
-		centerX  = kernel.getCenterX()+ ((mouseX - arg0.getX()) * kernel.getPixelScale());
-		centerY = kernel.getCenterY()+ ((mouseY - arg0.getY()) * kernel.getPixelScale());
-
+	public void mouseDragged(MouseEvent arg0) {	
+		centerX  = centerX+ ((mouseX - arg0.getX()) * pixelScale);
+		centerY = centerY+ ((mouseY - arg0.getY()) * pixelScale);
 		mouseX = arg0.getX();
 		mouseY = arg0.getY();
-
-		long elapsed = render(1f, centerX, centerY);
-		System.out.print(" "+elapsed);
-	//	System.out.println("center "+centerX+"\t"+centerY);
+		render(1f, centerX, centerY);
 	}
 	@Override
 	public void mousePressed(MouseEvent e) {
@@ -357,7 +507,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	@Override
 	public void keyPressed(KeyEvent e) {
 		if (e.getKeyCode() == KeyEvent.VK_ESCAPE) {
-			kernel.dispose();
+			CL.clUnloadCompiler();
 			System.exit(0);
 		}
 
@@ -373,7 +523,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 
 	@Override
 	public void windowClosing(WindowEvent arg0) {
-		kernel.dispose();
+		CL.clUnloadCompiler();
 		System.exit(0);
 
 	}
