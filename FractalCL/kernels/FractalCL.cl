@@ -1,12 +1,10 @@
 /*
  * Andrew Mcfarland [https://github.com/amcfarland]
  *
- * based on SimpleMandelbrot.cl
+ * based on  http://www.jocl.org/samples/SimpleMandelbrot.cl
  * Copyright 2009 Marco Hutter - http://www.jocl.org/
  */
 
-// A very simple OpenCL kernel for computing the mandelbrot set
-//
 // output        : A buffer with sizeX*sizeY elements, storing
 //                 the colors as RGB ints
 // sizeX, sizeX  : The width and height of the buffer
