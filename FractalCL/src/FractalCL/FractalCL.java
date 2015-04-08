@@ -59,6 +59,7 @@ import static org.jocl.CL.clSetKernelArg;*/
 import static org.jocl.CL.*;
 
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.DisplayMode;
 import java.awt.EventQueue;
 import java.awt.Graphics;
@@ -67,6 +68,8 @@ import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.event.AdjustmentEvent;
+import java.awt.event.AdjustmentListener;
 import java.awt.event.ComponentEvent;
 import java.awt.event.ComponentListener;
 import java.awt.event.KeyEvent;
@@ -92,6 +95,9 @@ import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Mixer;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
+import javax.swing.JPanel;
+import javax.swing.JScrollBar;
+import javax.swing.JSlider;
 import javax.swing.JSplitPane;
 
 
@@ -102,6 +108,11 @@ import javax.swing.JSplitPane;
 
 
 
+
+
+
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ChangeListener;
 
 import org.jocl.CL;
 import org.jocl.Pointer;
@@ -119,15 +130,26 @@ import org.jocl.cl_program;
 
 
 
+
+
+
+
+
+
+
+
 import com.amd.aparapi.Device;
 import com.amd.aparapi.Range;
+
+import java.awt.BorderLayout;
+import java.awt.Dimension;
 
 /**
  * @author AF7FC
  *
  */
 public class FractalCL extends JFrame implements MouseListener,MouseMotionListener, KeyListener,
-		WindowListener, ComponentListener, MouseWheelListener {
+		WindowListener, ComponentListener, MouseWheelListener,AdjustmentListener {
 
 	/** User selected zoom-in point on the Mandelbrot view. */
 	public static volatile Point to = null;
@@ -138,9 +160,12 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	JComponent viewer;
 	Rectangle oldBounds, newBounds;
 	JSplitPane splitPane;
-
-	static int width = 1024;
-	static int  height = 1024;
+	ControlPanel controlPanel;
+    public static JPanel drawPanel;
+    
+	static int frameWidth = 800;
+	static int  frameHeight = 600;
+	static int width,height;
 	static int centerPixelX,centerPixelY, testGridResolution,testGridWidth;
 	static double centerX = -1f;
 	static double  centerY = 0f;
@@ -148,7 +173,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	static Range range,rangeG;
 	static BufferedImage image;
 	static int[] rgb, testGrid;
-	int maxIterations = 2500;
+	int maxIterations = 5000;
 	
 	//static MandelKernel kernel;
 	static double pixelScale;
@@ -192,6 +217,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
      * the PBO. 
      */
     private int colorMap[];
+  
 	
     
     
@@ -201,14 +227,40 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 	 */
 	public FractalCL() {
 		super("Mandelbrot");
-		initialize();
+		
+		drawPanel = new JPanel();
+		drawPanel.setPreferredSize(new Dimension(3999, 2000));
+		drawPanel.setVisible(true);
+	
+		controlPanel = new ControlPanel(this);
+		controlPanel.setBackground(Color.yellow);
+		controlPanel.setVisible(true);
+	
+		
+		
+		
+		splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,controlPanel,drawPanel);
+		splitPane.setDividerLocation(200);
+		splitPane.setDividerSize(10);
+		splitPane.setEnabled(false);
+		getContentPane().add(splitPane, BorderLayout.CENTER);
+	
+
+
+		
 		addKeyListener(this);
 		addWindowListener(this);
-		getRootPane().addMouseListener(this);
-		getRootPane().addComponentListener(this);
-		getContentPane().addMouseMotionListener(this);
-		getContentPane().addMouseListener(this);
-		addMouseWheelListener(this);
+		drawPanel.addMouseListener(this);
+		drawPanel.addComponentListener(this);
+		drawPanel.addMouseMotionListener(this);
+		drawPanel.addMouseListener(this);
+		drawPanel.addMouseWheelListener(this);
+		drawPanel.addMouseMotionListener(this);
+
+		
+		
+		
+		
 		gEnvironment = GraphicsEnvironment.getLocalGraphicsEnvironment();
 		gDevice = gEnvironment.getScreenDevices()[0]; // second Monitor
 		gConfiguration = getContentPane().getGraphicsConfiguration();
@@ -218,60 +270,82 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 		// height = dMode.getHeight();
 		//this.setIgnoreRepaint(true);
 		//this.setUndecorated(true);
+
+
+		initialize();
 	}
 
-	@Override
-	public void paint(Graphics g) {
-		// getContentPane().setBackground(Color.green);
-		g.drawImage(image, 0, 0, width, height, this);
-	}
 
 	// setup image and OCL kernal based on current window size
 	public void initialize() {
-		System.out.println("initialize()");
-	
-		
+		//System.out.println("initialize()");
 		if (this.isVisible() == false) {
 			initializeCL();
-			this.setBounds(1940,0,width,height);
+			setBounds(1940,0,frameWidth,frameHeight);
+			setVisible(true);
+			
+
+			
+			
+		    width = drawPanel.getWidth();
+		    height = drawPanel.getHeight();
+		    image = new BufferedImage(width,height,BufferedImage.TYPE_INT_RGB);
+		    rgb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
 			newBounds = getBounds();
 			pixelScale = 2.0f/width;
 			centerX =-0.75f;
 			centerY = 0f;
-			this.setVisible(true);
+
 		}else{
-			clReleaseMemObject(pixelMem);
+			if(pixelMem != null)
+				clReleaseMemObject(pixelMem);
+			
+
+		
+		    width = drawPanel.getWidth();
+		    height = drawPanel.getHeight();
+		    image = new BufferedImage(width,height,BufferedImage.TYPE_INT_RGB);
+		    rgb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
+			// resize to a multiple of testGridResolution
+		    testGridResolution = 25;
+		    //width = (width-width%testGridResolution)+testGridResolution;
+			//height = (height-height%testGridResolution)+testGridResolution;
+			
+
+
+	        // Create the memory object which will be filled with the pixel data
+	        pixelMem = clCreateBuffer(context, CL_MEM_WRITE_ONLY,width * height * Sizeof.cl_int, null, null);
+	        
+
+		//	System.out.println("WxH "+width+"\t"+height);
+			clDevice = Device.best();
+
+			testGridWidth = width/testGridResolution;
+			testGrid = new int[(width/testGridResolution)*(height/testGridResolution)];
+
+		
+			
+			centerPixelX = width/2;
+			centerPixelY = height/2;
+			// save current values
+			
+	        // Create and fill the memory object containing the color map
+	        colorMap = new int[maxIterations];
+	        float step = 5f/(float)maxIterations;
+	        for(int f= 0; f< maxIterations; f++){
+	        	Color temp = Color.getHSBColor(1+f*step, .7f, .8f);
+	        	colorMap[f] = temp.getRGB();
+	        //	System.out.println(colorMap[(int)f]);
+	        }
+	        colorMapMem = clCreateBuffer(context, CL_MEM_READ_WRITE,colorMap.length * Sizeof.cl_int, null, null);
+	        
+	        
+	        
+	        
+			render(1f, centerX, centerY);
 		}
-
 		
-	    testGridResolution = 25;
-	    width = getContentPane().getWidth();
-	    height = getContentPane().getHeight();
-		// resize to a multiple of testGridResolution
-	    width = width-width%testGridResolution+testGridResolution;
-		height = height-height%testGridResolution+testGridResolution;
-	//System.out.println("width "+width+"  height"+height);
 
-        // Create the memory object which will be filled with the pixel data
-        pixelMem = clCreateBuffer(context, CL_MEM_WRITE_ONLY,width * height * Sizeof.cl_int, null, null);
-        
-
-	//	System.out.println("WxH "+width+"\t"+height);
-		clDevice = Device.best();
-
-		testGridWidth = width/testGridResolution;
-		testGrid = new int[(width/testGridResolution)*(height/testGridResolution)];
-
-		image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-		rgb = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
-
-
-		centerPixelX = width/2;
-		centerPixelY = height/2;
-		// save current values
-		
-		
-		render(1f, centerX, centerY);
 
 		// Report target execution mode: GPU or JTP (Java Thread Pool).
 		//System.out.println("Execution mode=" + kernel.getExecutionMode());
@@ -353,20 +427,21 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
         
         ///
         
-        // Create and fill the memory object containing the color map
-        colorMap = new int[maxIterations+1];
-        float step = 5f/maxIterations;
-        for(int f= 0; f< maxIterations; f++){
-        	Color temp = Color.getHSBColor(f*step, .7f, .8f);
-        	colorMap[f] = temp.getRGB();
-        	System.out.println(colorMap[(int)f]);
-        }
-        colorMapMem = clCreateBuffer(context, CL_MEM_READ_WRITE,colorMap.length * Sizeof.cl_int, null, null);
+
       
         
         
 	}
 	
+	
+	
+	
+	public void paint(Graphics g) {
+		super.paint(g);
+		drawPanel.getGraphics().drawImage(image, 0, 0, this);
+
+	}
+
 	
 	
 /**
@@ -379,8 +454,14 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
  */
 	private void  render(double zoomFactor, double centerX, double centerY) {
 		//System.out.println("RENDER "+zoomFactor+"\t"+centerX+"\t"+centerY);
-        pixelScale *= zoomFactor;
+		
+		
+		
+      // if(true) return;
+		pixelScale *= zoomFactor;
 		// Set work size and execute the kernel
+        width = drawPanel.getWidth();
+        height = drawPanel.getHeight();
         long globalWorkSize[] = new long[2];
         globalWorkSize[0] = width;
         globalWorkSize[1] = height;
@@ -396,15 +477,14 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
         clSetKernelArg(kernel, 7, Sizeof.cl_mem, Pointer.to(colorMapMem));
         clSetKernelArg(kernel, 8, Sizeof.cl_int, Pointer.to(new int[]{ colorMap.length }));
 
-        clEnqueueWriteBuffer(commandQueue, colorMapMem, false, 0,colorMap.length * Sizeof.cl_uint, Pointer.to(colorMap), 0, null, null);
+        clEnqueueWriteBuffer(commandQueue, colorMapMem, true, 0,colorMap.length * Sizeof.cl_uint, Pointer.to(colorMap), 0, null, null);
         clEnqueueNDRangeKernel(commandQueue, kernel, 2, null,globalWorkSize, null, 0, null, null);
         
-        
-    	//System.out.println("width "+width+"  height"+height);
+
         clEnqueueReadBuffer(commandQueue, pixelMem, CL_TRUE, 0,Sizeof.cl_uint * width*height, Pointer.to(rgb), 0, null, null);
        
-			
-		this.paint(this.getContentPane().getGraphics());
+
+        drawPanel.getGraphics().drawImage(image, 0, 0, this);
 	}
 
 	
@@ -422,6 +502,38 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 		
 
 	}
+	
+	
+	void showPixelInfo(MouseEvent e){
+	    int ix = e.getX();
+	    int iy = e.getY();
+
+	   double r = (centerX - ((width  / 2) * pixelScale)) + (ix * pixelScale);
+	   double i = (centerY - ((height / 2) * pixelScale)) + (iy * pixelScale);
+	   
+	   
+	    double x = 0;
+	    double y = 0;
+	  	double xx;
+	  	double yy;
+	    double magnitudeSquared = 0;
+	    int iteration = 0;
+	    while (iteration<maxIterations && magnitudeSquared<4)
+	    {
+	        xx = x*x;
+	        yy = y*y;
+	        y = 2*x*y+i;
+	        x = xx-yy+r;
+	        magnitudeSquared=xx+yy;
+	        iteration++;
+	    }
+		
+	    controlPanel.getTable().getModel().setValueAt(iteration, 0, 1);
+	    controlPanel.getTable().getModel().setValueAt(r, 1, 1);
+	    controlPanel.getTable().getModel().setValueAt(i, 2, 1);
+	    
+	}
+	
 	
 	
     /**
@@ -479,11 +591,11 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 		// float newCenterX = (width/2-arg0.getX())*kernel.getPixelScale();
 		// float newCenterY = (height/2-arg0.getY())*kernel.getPixelScale();
 
-		for (int i = 0; i < amount; i += 1) {
+	//	for (int i = 0; i < amount; i += 1) {
 			// System.out.println("Elapsed milliseconds = "+render(1+(step*zoomSpeed),(centerX-newCenterX)/4,(centerY-newCenterY)/4));
 			render((float)(1+ (step * zoomSpeed)), centerX, centerY);
 			//System.out.println("" + step);
-		}
+		//}
 
 	}
 
@@ -571,6 +683,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 
 	@Override
 	public void windowOpened(WindowEvent arg0) {
+		System.out.println("Initializing...");
 	}
 
 	@Override
@@ -583,7 +696,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 		
 		
 		
-		int xDelta = Math.abs(newBounds.width-this.getWidth());
+/*		int xDelta = Math.abs(newBounds.width-this.getWidth());
 		int yDelta = Math.abs(newBounds.height- this.getHeight());
 		System.out.println(xDelta+" "+yDelta);
 		if( xDelta >testGridResolution || yDelta > testGridResolution){
@@ -591,7 +704,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 			this.setBounds(newBounds.x,newBounds.y,getBounds().width-getBounds().width%testGridResolution, getBounds().height-getBounds().height%testGridResolution);
 			newBounds = getBounds();
 			
-		}
+		}*/
 		initialize();
 
 	}
@@ -616,6 +729,7 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 			public void run() {
 				try {
 					FractalCL main = new FractalCL();
+					main.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
 				} catch (Exception e) {
 					e.printStackTrace();
@@ -628,7 +742,23 @@ public class FractalCL extends JFrame implements MouseListener,MouseMotionListen
 
 	@Override
 	public void mouseMoved(MouseEvent arg0) {
-		// TODO Auto-generated method stub
+	
+		showPixelInfo(arg0);
+		//System.out.println(arg0.getX()+"\t"+arg0.getY()+"\t"+iterations);
+	}
+
+
+
+
+
+
+	public void adjustmentValueChanged(AdjustmentEvent arg0) {
+		//System.out.println("Adjustment says "+arg0.getValue());
+		Object source = arg0.getSource();
+		if( source.equals(controlPanel.getIterationsPanel().scrollBar)){
+			maxIterations = arg0.getValue();
+			render(1f,centerX,centerY);
+		}
 		
 	}
 
